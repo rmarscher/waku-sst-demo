@@ -4,9 +4,25 @@ This project uses bun for monorepo package management and SST Ion for infrastruc
 
 Reference https://github.com/sst/ion/tree/dev/examples/aws-monorepo
 
+Before you initialize SST, our custom SST component references files that don't exist and that causes the init step to fail before it even starts. To fix this, copy the `sst-facade` folder to `.sst`:
+
+```sh
+cp -r sst-facade .sst
+```
+
+Then install dependencies:
+
+```sh
+bun i
+```
+
+Then you should be able to start the SST dev environment.
+
 ```sh
 bun x sst dev
 ```
+
+And deploy to AWS.
 
 ```sh
 bun x sst deploy --stage production
