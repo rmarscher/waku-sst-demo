@@ -1,0 +1,25 @@
+{
+  "name": "waku-sst-demo",
+  "version": "0.0.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "clean": "bun run clean:packages && bun run clean:cache",
+    "clean:cache": "bun pm cache rm",
+    "clean:packages": "rm -rf bun.lockb node_modules",
+    "update:interactive": "bun x npm-check-updates -ui -s && bun x npm-check-updates -ui -ws"
+  },
+  "dependencies": {
+    "@pulumi/aws": "6.28.1",
+    "@pulumi/pulumi": "3.115.2",
+    "sst": "3.0.119"
+  },
+  "devDependencies": {
+    "@tsconfig/node20": "20.1.4",
+    "typescript": "5.5.4"
+  },
+  "patchedDependencies": {
+    "waku@0.21.1": "patches/waku@0.21.1.patch"
+  }
+}

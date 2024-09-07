@@ -1,0 +1,726 @@
+diff --git a/dist/cli.js b/dist/cli.js
+index aaded42819feb6217872c21e6fd3f2e18cbb2737..09aed47aa1ca576ec2b8b602bb189f1fdf62c681 100644
+--- a/dist/cli.js
++++ b/dist/cli.js
+@@ -46,6 +46,9 @@ const { values, positionals } = parseArgs({
+         'with-aws-lambda': {
+             type: 'boolean'
+         },
++        'with-aws-lambda-sst': {
++            type: 'boolean'
++        },
+         'experimental-partial': {
+             type: 'boolean'
+         },
+@@ -114,7 +117,7 @@ async function runBuild() {
+         config,
+         env: process.env,
+         partial: !!values['experimental-partial'],
+-        deploy: (values['with-vercel'] ?? !!process.env.VERCEL ? values['with-vercel-static'] ? 'vercel-static' : 'vercel-serverless' : undefined) || (values['with-netlify'] ?? !!process.env.NETLIFY ? values['with-netlify-static'] ? 'netlify-static' : 'netlify-functions' : undefined) || (values['with-cloudflare'] ? 'cloudflare' : undefined) || (values['with-partykit'] ? 'partykit' : undefined) || (values['with-deno'] ? 'deno' : undefined) || (values['with-aws-lambda'] ? 'aws-lambda' : undefined)
++        deploy: (values['with-vercel'] ?? !!process.env.VERCEL ? values['with-vercel-static'] ? 'vercel-static' : 'vercel-serverless' : undefined) || (values['with-netlify'] ?? !!process.env.NETLIFY ? values['with-netlify-static'] ? 'netlify-static' : 'netlify-functions' : undefined) || (values['with-cloudflare'] ? 'cloudflare' : undefined) || (values['with-partykit'] ? 'partykit' : undefined) || (values['with-deno'] ? 'deno' : undefined) || (values['with-aws-lambda-sst'] ? 'aws-lambda-sst' : undefined) || (values['with-aws-lambda'] ? 'aws-lambda' : undefined)
+     });
+ }
+ async function runStart() {
+@@ -175,6 +178,7 @@ Options:
+   --with-partykit       Output for PartyKit on build
+   --with-deno           Output for Deno on build
+   --with-aws-lambda     Output for AWS Lambda on build
++  --with-aws-lambda-sst Output for AWS Lambda compatible with SST Ion on build
+   -p, --port            Port number for the server
+   -v, --version         Display the version number
+   -h, --help            Display this help message
+diff --git a/dist/client.js b/dist/client.js
+index 2cc76071dfd1228502b3f3312f580f5089cf97b8..342e05a07ca3e637fe643339f4d3ec7a80e79653 100644
+--- a/dist/client.js
++++ b/dist/client.js
+@@ -1,6 +1,6 @@
+ /// <reference types="react/canary" />
+ 'use client';
+-import { Component, createContext, createElement, memo, use, useCallback, useEffect, useState, startTransition } from 'react';
++import { Component, createContext, createElement, memo, use, useCallback, useEffect, useState } from 'react';
+ import RSDWClient from 'react-server-dom-webpack/client';
+ import { encodeInput, encodeActionId } from './lib/renderers/utils.js';
+ const { createFromFetch, encodeReply } = RSDWClient;
+@@ -62,10 +62,8 @@ const defaultFetchCache = {};
+         callServer: (actionId, args)=>callServerRSC(actionId, args, fetchCache)
+     });
+     fetchCache[ON_FETCH_DATA]?.(data);
+-    startTransition(()=>{
+-        // FIXME this causes rerenders even if data is empty
+-        fetchCache[SET_ELEMENTS]?.((prev)=>mergeElements(prev, data));
+-    });
++    // FIXME this causes rerenders even if data is empty
++    fetchCache[SET_ELEMENTS]?.((prev)=>mergeElements(prev, data));
+     return (await data)._value;
+ };
+ const prefetchedParams = new WeakMap();
+@@ -126,9 +124,7 @@ export const Root = ({ initialInput, initialParams, fetchCache = defaultFetchCac
+         // clear cache entry before fetching
+         delete fetchCache[ENTRY];
+         const data = fetchRSC(input, params, fetchCache);
+-        startTransition(()=>{
+-            setElements((prev)=>mergeElements(prev, data));
+-        });
++        setElements((prev)=>mergeElements(prev, data));
+     }, [
+         fetchCache
+     ]);
+diff --git a/dist/lib/builder/build.d.ts b/dist/lib/builder/build.d.ts
+index 0dff6833b10cad88e2621247deb98e8c025e5843..aefb935aa70f7b25fe21508942a743160c038425 100644
+--- a/dist/lib/builder/build.d.ts
++++ b/dist/lib/builder/build.d.ts
+@@ -3,5 +3,5 @@ export declare function build(options: {
+     config: Config;
+     env?: Record<string, string>;
+     partial?: boolean;
+-    deploy?: 'vercel-static' | 'vercel-serverless' | 'netlify-static' | 'netlify-functions' | 'cloudflare' | 'partykit' | 'deno' | 'aws-lambda' | undefined;
++    deploy?: 'vercel-static' | 'vercel-serverless' | 'netlify-static' | 'netlify-functions' | 'cloudflare' | 'partykit' | 'deno' | 'aws-lambda' | 'aws-lambda-sst' | undefined;
+ }): Promise<void>;
+diff --git a/dist/lib/builder/build.js b/dist/lib/builder/build.js
+index 7d07a949269c9057f2e5a1206f6e12edc5527c0c..e46ae82eb0f1375857db482b5e1e0eeace87e4ad 100644
+--- a/dist/lib/builder/build.js
++++ b/dist/lib/builder/build.js
+@@ -2,8 +2,9 @@ import { Readable } from 'node:stream';
+ import { pipeline } from 'node:stream/promises';
+ import { build as buildVite, resolveConfig as resolveViteConfig } from 'vite';
+ import viteReact from '@vitejs/plugin-react';
++import { unstable_getPlatformObject } from '../../server.js';
+ import { resolveConfig, EXTENSIONS } from '../config.js';
+-import { decodeFilePathFromAbsolute, extname, filePathToFileURL, fileURLToFilePath, joinPath } from '../utils/path.js';
++import { decodeFilePathFromAbsolute, extname, filePathToFileURL, fileURLToFilePath, getPathMapping, joinPath } from '../utils/path.js';
+ import { appendFile, createWriteStream, existsSync, mkdir, readdir, readFile, rename, unlink, writeFile } from '../utils/node-fs.js';
+ import { encodeInput, generatePrefetchCode } from '../renderers/utils.js';
+ import { getBuildConfig, getSsrConfig, renderRsc, SERVER_MODULE_MAP } from '../renderers/rsc-renderer.js';
+@@ -23,6 +24,7 @@ import { emitNetlifyOutput } from './output-netlify.js';
+ import { emitCloudflareOutput } from './output-cloudflare.js';
+ import { emitPartyKitOutput } from './output-partykit.js';
+ import { emitAwsLambdaOutput } from './output-aws-lambda.js';
++import { emitAwsLambdaSstOutput } from './output-aws-lambda-sst.js';
+ import { DIST_ENTRIES_JS, DIST_SERVE_JS, DIST_PUBLIC, DIST_ASSETS, DIST_SSR } from './constants.js';
+ // TODO this file and functions in it are too long. will fix.
+ // Upstream issue: https://github.com/rollup/rollup/issues/4699
+@@ -429,6 +431,29 @@ const pathSpec2pathname = (pathSpec)=>{
+     }
+     return '/' + pathSpec.map(({ name })=>name).join('/');
+ };
++const willEmitPublicIndexHtml = async (env, config, distEntries, buildConfig)=>{
++    const hasConfig = buildConfig.some(({ pathname })=>{
++        const pathSpec = typeof pathname === 'string' ? pathname2pathSpec(pathname) : pathname;
++        return !!getPathMapping(pathSpec, '/');
++    });
++    if (!hasConfig) {
++        return false;
++    }
++    try {
++        return !!await getSsrConfig({
++            env,
++            config,
++            pathname: '/',
++            searchParams: new URLSearchParams()
++        }, {
++            isDev: false,
++            entries: distEntries
++        });
++    } catch  {
++        // HACK to pass e2e tests
++        return false;
++    }
++};
+ const emitHtmlFiles = async (rootDir, env, config, distEntriesFile, distEntries, buildConfig, getClientModules, clientBuildOutput)=>{
+     const nonJsAssets = clientBuildOutput.output.flatMap(({ type, fileName })=>type === 'asset' && !fileName.endsWith('.js') ? [
+             fileName
+@@ -439,8 +464,7 @@ const emitHtmlFiles = async (rootDir, env, config, distEntriesFile, distEntries,
+     const publicIndexHtml = await readFile(publicIndexHtmlFile, {
+         encoding: 'utf8'
+     });
+-    if (buildConfig.length) {
+-        // Delete the default index.html file unless buildConfig is empty.
++    if (await willEmitPublicIndexHtml(env, config, distEntries, buildConfig)) {
+         await unlink(publicIndexHtmlFile);
+     }
+     const publicIndexHtmlHead = publicIndexHtml.replace(/.*?<head>(.*?)<\/head>.*/s, '$1');
+@@ -531,8 +555,11 @@ export async function build(options) {
+     const rootDir = (await resolveViteConfig({}, 'build', 'production', 'production')).root;
+     const distEntriesFile = joinPath(rootDir, config.distDir, DIST_ENTRIES_JS);
+     const isNodeCompatible = options.deploy !== 'cloudflare' && options.deploy !== 'partykit' && options.deploy !== 'deno';
++    const platformObject = unstable_getPlatformObject();
++    platformObject.buildOptions ||= {};
++    platformObject.buildOptions.deploy = options.deploy;
+     const { clientEntryFiles, serverEntryFiles, serverModuleFiles } = await analyzeEntries(rootDir, config);
+-    const serverBuildOutput = await buildServerBundle(rootDir, env, config, clientEntryFiles, serverEntryFiles, serverModuleFiles, (options.deploy === 'vercel-serverless' ? 'vercel' : false) || (options.deploy === 'netlify-functions' ? 'netlify' : false) || (options.deploy === 'cloudflare' ? 'cloudflare' : false) || (options.deploy === 'partykit' ? 'partykit' : false) || (options.deploy === 'deno' ? 'deno' : false) || (options.deploy === 'aws-lambda' ? 'aws-lambda' : false), isNodeCompatible, !!options.partial);
++    const serverBuildOutput = await buildServerBundle(rootDir, env, config, clientEntryFiles, serverEntryFiles, serverModuleFiles, (options.deploy === 'vercel-serverless' ? 'vercel' : false) || (options.deploy === 'netlify-functions' ? 'netlify' : false) || (options.deploy === 'cloudflare' ? 'cloudflare' : false) || (options.deploy === 'partykit' ? 'partykit' : false) || (options.deploy === 'deno' ? 'deno' : false) || (options.deploy === 'aws-lambda-sst' ? 'aws-lambda-sst' : false) || (options.deploy === 'aws-lambda' ? 'aws-lambda' : false), isNodeCompatible, !!options.partial);
+     await buildSsrBundle(rootDir, env, config, clientEntryFiles, serverEntryFiles, serverBuildOutput, isNodeCompatible, !!options.partial);
+     const clientBuildOutput = await buildClientBundle(rootDir, env, config, clientEntryFiles, serverEntryFiles, serverBuildOutput, !!options.partial);
+     const distEntries = await import(filePathToFileURL(distEntriesFile));
+@@ -543,7 +570,6 @@ export async function build(options) {
+     }, {
+         entries: distEntries
+     });
+-    await appendFile(distEntriesFile, `export const buildConfig = ${JSON.stringify(buildConfig)};`);
+     const { getClientModules } = await emitRscFiles(rootDir, env, config, distEntries, buildConfig);
+     await emitHtmlFiles(rootDir, env, config, distEntriesFile, distEntries, buildConfig, getClientModules, clientBuildOutput);
+     if (options.deploy?.startsWith('vercel-')) {
+@@ -556,5 +582,8 @@ export async function build(options) {
+         await emitPartyKitOutput(rootDir, config, DIST_SERVE_JS);
+     } else if (options.deploy === 'aws-lambda') {
+         await emitAwsLambdaOutput(config);
++    } else if (options.deploy === 'aws-lambda-sst') {
++        await emitAwsLambdaSstOutput(config);
+     }
++    await appendFile(distEntriesFile, `export const buildData = ${JSON.stringify(platformObject.buildData)};`);
+ }
+diff --git a/node_modules/waku/dist/lib/builder/output-aws-lambda-sst.d.ts b/dist/lib/builder/output-aws-lambda-sst.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..4843aa580425cc9a817267a165c6c5fe42d080f5
+--- /dev/null
++++ b/dist/lib/builder/output-aws-lambda-sst.d.ts
+@@ -0,0 +1,2 @@
++import type { ResolvedConfig } from '../config.js';
++export declare const emitAwsLambdaSstOutput: (config: ResolvedConfig) => Promise<void>;
+diff --git a/node_modules/waku/dist/lib/builder/output-aws-lambda-sst.js b/dist/lib/builder/output-aws-lambda-sst.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..6169e275b4db45c7b65d0e9ffabb7ae0de53cf6f
+--- /dev/null
++++ b/dist/lib/builder/output-aws-lambda-sst.js
+@@ -0,0 +1,37 @@
++import path from 'node:path';
++import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
++import { DIST_ASSETS, DIST_PUBLIC } from './constants.js';
++export const emitAwsLambdaSstOutput = async (config)=>{
++    writeFileSync(path.join(config.distDir, 'package.json'), JSON.stringify({
++        type: 'module'
++    }, null, 2));
++    // Move the distDir so we can move files back to different locations
++    renameSync(config.distDir, '_dist');
++    mkdirSync(config.distDir);
++    const functionDir = path.join(config.distDir, 'function');
++    const functionPublicDir = path.join(functionDir, DIST_PUBLIC);
++    const publicDir = path.join(config.distDir, 'public');
++    // Move everything to the function folder
++    renameSync('_dist', functionDir);
++    // Then move the function public folder
++    renameSync(functionPublicDir, publicDir);
++    if (existsSync(config.privateDir)) {
++        cpSync(config.privateDir, path.join(functionDir, config.privateDir), {
++            recursive: true
++        });
++    }
++    // Assume that any user files in public do not need to be bundled
++    // with the lambda function but public/assets/*.js and css do.
++    // We'll also copy any html files to the function public folder
++    // for use as custom error pages.
++    mkdirSync(functionPublicDir);
++    const publicAssetsDir = path.join(publicDir, DIST_ASSETS);
++    const files = readdirSync(publicAssetsDir).filter((file)=>file.endsWith('.css') || file.endsWith('.js'));
++    for (const file of files){
++        cpSync(path.join(publicAssetsDir, file), path.join(functionPublicDir, DIST_ASSETS, file));
++    }
++    const htmlFiles = readdirSync(publicDir).filter((file)=>file.endsWith('.html'));
++    for (const file of htmlFiles){
++        cpSync(path.join(publicDir, file), path.join(functionPublicDir, file));
++    }
++};
+diff --git a/node_modules/waku/dist/lib/builder/serve-aws-lambda-sst.d.ts b/dist/lib/builder/serve-aws-lambda-sst.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..624930165a494ef102c432077a6179263df00053
+--- /dev/null
++++ b/dist/lib/builder/serve-aws-lambda-sst.d.ts
+@@ -0,0 +1,2 @@
++import { streamHandle } from 'hono/aws-lambda';
++export declare const handler: ReturnType<typeof streamHandle>;
+diff --git a/node_modules/waku/dist/lib/builder/serve-aws-lambda-sst.js b/dist/lib/builder/serve-aws-lambda-sst.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..6410d1248cd0ea21ccefd213cd4fa641daf62d54
+--- /dev/null
++++ b/dist/lib/builder/serve-aws-lambda-sst.js
+@@ -0,0 +1,27 @@
++import path from 'node:path';
++import { existsSync, readFileSync } from 'node:fs';
++import { Hono } from 'hono';
++import { streamHandle } from 'hono/aws-lambda';
++import { runner } from '../hono/runner.js';
++const loadEntries = ()=>import(import.meta.env.WAKU_ENTRIES_FILE);
++const env = process.env;
++const app = new Hono();
++app.use('*', runner({
++    cmd: 'start',
++    loadEntries,
++    env
++}));
++app.notFound(async (c)=>{
++    if (c.req.path === '/') {
++        const indexFile = path.join('public', 'index.html');
++        if (existsSync(indexFile)) {
++            return c.html(readFileSync(indexFile, 'utf8'), 200);
++        }
++    }
++    const file = path.join('public', '404.html');
++    if (existsSync(file)) {
++        return c.html(readFileSync(file, 'utf8'), 404);
++    }
++    return c.text('404 Not Found', 404);
++});
++export const handler = streamHandle(app);
+diff --git a/dist/lib/middleware/dev-server-impl.js b/dist/lib/middleware/dev-server-impl.js
+index 607cf594916fe7e0957623a28ad742c108d887d9..7f580bf7d4c4cd3fed7994304993ccbd000255e8 100644
+--- a/dist/lib/middleware/dev-server-impl.js
++++ b/dist/lib/middleware/dev-server-impl.js
+@@ -127,15 +127,17 @@ const createMainViteServer = (env, configPromise)=>{
+         return vite;
+     });
+     const loadServerModuleMain = async (idOrFileURL)=>{
++        const vite = await vitePromise;
+         if (idOrFileURL === 'waku' || idOrFileURL.startsWith('waku/')) {
+             // HACK `external: ['waku']` doesn't do the same
+             return import(/* @vite-ignore */ idOrFileURL);
+         }
+         if (idOrFileURL.startsWith('file://') && idOrFileURL.includes('/node_modules/')) {
+             // HACK node_modules should be externalized
+-            return import(/* @vite-ignore */ fileURLToFilePath(idOrFileURL));
++            const file = fileURLToFilePath(idOrFileURL);
++            const fileWithAbsolutePath = file.startsWith('/') ? file : joinPath(vite.config.root, file);
++            return import(/* @vite-ignore */ fileWithAbsolutePath);
+         }
+-        const vite = await vitePromise;
+         return vite.ssrLoadModule(idOrFileURL.startsWith('file://') ? fileURLToFilePath(idOrFileURL) : idOrFileURL);
+     };
+     const transformIndexHtml = async (pathname)=>{
+diff --git a/dist/lib/middleware/rsc.js b/dist/lib/middleware/rsc.js
+index a8cd07ace92b3971b06744a3811dd776afb7a8e9..a094d17f62868e0323a6d0c0a5e0eb5f85e5e644 100644
+--- a/dist/lib/middleware/rsc.js
++++ b/dist/lib/middleware/rsc.js
+@@ -15,7 +15,7 @@ export const rsc = (options)=>{
+         if (ctx.req.url.pathname.startsWith(basePrefix)) {
+             const { headers } = ctx.req;
+             try {
+-                const input = decodeInput(ctx.req.url.pathname.slice(basePrefix.length));
++                const input = decodeInput(decodeURI(ctx.req.url.pathname.slice(basePrefix.length)));
+                 const args = {
+                     env,
+                     config,
+diff --git a/dist/lib/plugins/vite-plugin-rsc-serve.d.ts b/dist/lib/plugins/vite-plugin-rsc-serve.d.ts
+index a02164edd815e511151a6678b7b361599340c762..4f629414d9952582cfd192e0057fe55486fe30ae 100644
+--- a/dist/lib/plugins/vite-plugin-rsc-serve.d.ts
++++ b/dist/lib/plugins/vite-plugin-rsc-serve.d.ts
+@@ -5,5 +5,5 @@ export declare function rscServePlugin(opts: {
+     distDir: string;
+     distPublic: string;
+     srcServeFile: string;
+-    serve: 'vercel' | 'netlify' | 'cloudflare' | 'partykit' | 'deno' | 'aws-lambda';
++    serve: 'vercel' | 'netlify' | 'cloudflare' | 'partykit' | 'deno' | 'aws-lambda-sst' | 'aws-lambda';
+ }): Plugin;
+diff --git a/dist/lib/renderers/html-renderer.js b/dist/lib/renderers/html-renderer.js
+index 30b5b7825c3e802b894c3ba0bb1cb7b3f558c65a..8b60abbb4760e5a691dba8257b81bc2cd7aa9a44 100644
+--- a/dist/lib/renderers/html-renderer.js
++++ b/dist/lib/renderers/html-renderer.js
+@@ -136,7 +136,7 @@ export const renderHtml = async (opts)=>{
+         loadClientModule('rsdw-client'),
+         loadClientModule('waku-client')
+     ]);
+-    const ssrConfig = await getSsrConfigForHtml?.(pathname, searchParams);
++    const ssrConfig = await getSsrConfigForHtml(pathname, searchParams);
+     if (!ssrConfig) {
+         return null;
+     }
+@@ -157,7 +157,7 @@ export const renderHtml = async (opts)=>{
+                         // TODO too long, we need to refactor this logic
+                         let file = filePath.slice(config.basePath.length).split('?')[0];
+                         const isFsPath = file.startsWith('@fs/');
+-                        file = '/' + (isFsPath ? file.slice('@fs/'.length) : file);
++                        file = isFsPath ? file.slice('@fs'.length) : file;
+                         const fileWithAbsolutePath = isFsPath ? file : encodeFilePathToAbsolute(joinPath(opts.rootDir, file));
+                         const wakuDist = joinPath(fileURLToFilePath(import.meta.url), '../../..');
+                         if (fileWithAbsolutePath.startsWith(wakuDist)) {
+diff --git a/dist/lib/renderers/rsc-renderer.js b/dist/lib/renderers/rsc-renderer.js
+index 625451c7a7bd93694e03b0796505fe4852adf3c4..d57062b455853a8ca1449e65a31bf2469e6978e8 100644
+--- a/dist/lib/renderers/rsc-renderer.js
++++ b/dist/lib/renderers/rsc-renderer.js
+@@ -1,3 +1,4 @@
++import { unstable_getPlatformObject } from '../../server.js';
+ import { filePathToFileURL } from '../utils/path.js';
+ import { streamToArrayBuffer } from '../utils/stream.js';
+ import { decodeActionId } from '../renderers/utils.js';
+@@ -16,13 +17,16 @@ export async function renderRsc(args, opts) {
+     const { env, config, input, contentType, context, body, moduleIdCallback, onError } = args;
+     const { isDev, entries } = opts;
+     const resolveClientEntry = isDev ? opts.resolveClientEntry : resolveClientEntryForPrd;
+-    const { default: { renderEntries }, loadModule, buildConfig } = entries;
++    const { default: { renderEntries }, loadModule, buildData } = entries;
+     const loadServerModule = (key)=>isDev ? opts.loadServerModuleRsc(SERVER_MODULE_MAP[key]) : loadModule(key);
+     const [{ default: { renderToReadableStream, decodeReply } }, { setAllEnvInternal, runWithRenderStoreInternal }] = await Promise.all([
+         loadServerModule('rsdw-server'),
+         loadServerModule('waku-server')
+     ]);
+     setAllEnvInternal(env);
++    if (buildData) {
++        unstable_getPlatformObject().buildData = buildData;
++    }
+     const clientBundlerConfig = new Proxy({}, {
+         get (_target, encodedId) {
+             const [file, name] = encodedId.split('#');
+@@ -61,8 +65,7 @@ export async function renderRsc(args, opts) {
+         };
+         return runWithRenderStoreInternal(renderStore, async ()=>{
+             const elements = await renderEntries(input, {
+-                params,
+-                buildConfig
++                params
+             });
+             if (elements === null) {
+                 const err = new Error('No function component found');
+@@ -89,8 +92,7 @@ export async function renderRsc(args, opts) {
+                 elementsPromise = Promise.all([
+                     elementsPromise,
+                     renderEntries(input, {
+-                        params,
+-                        buildConfig
++                        params
+                     })
+                 ]).then(([oldElements, newElements])=>({
+                         ...oldElements,
+@@ -189,16 +191,18 @@ export async function getSsrConfig(args, opts) {
+     const { env, config, pathname, searchParams } = args;
+     const { isDev, entries } = opts;
+     const resolveClientEntry = isDev ? opts.resolveClientEntry : resolveClientEntryForPrd;
+-    const { default: { getSsrConfig }, loadModule, buildConfig } = entries;
++    const { default: { getSsrConfig }, loadModule, buildData } = entries;
+     const loadServerModule = (key)=>isDev ? opts.loadServerModuleRsc(SERVER_MODULE_MAP[key]) : loadModule(key);
+     const [{ default: { renderToReadableStream } }, { setAllEnvInternal }] = await Promise.all([
+         loadServerModule('rsdw-server'),
+         loadServerModule('waku-server')
+     ]);
+     setAllEnvInternal(env);
++    if (buildData) {
++        unstable_getPlatformObject().buildData = buildData;
++    }
+     const ssrConfig = await getSsrConfig?.(pathname, {
+-        searchParams,
+-        buildConfig
++        searchParams
+     });
+     if (!ssrConfig) {
+         return null;
+diff --git a/dist/router/create-pages.d.ts b/dist/router/create-pages.d.ts
+index 5260ea8a98627337ef4e6891b923df38c5a7d2ba..399d3f887dcc011417e3f04a13fe4c334c4c8511 100644
+--- a/dist/router/create-pages.d.ts
++++ b/dist/router/create-pages.d.ts
+@@ -1,6 +1,5 @@
+ import type { FunctionComponent, ReactNode } from 'react';
+ import type { RouteProps } from './common.js';
+-import type { BuildConfig } from '../server.js';
+ /**
+  * Type version of `String.prototype.split()`. Splits the first string argument by the second string argument
+  * @example
+@@ -59,9 +58,6 @@ export type CreateLayout = <T extends string>(layout: {
+ export declare function createPages(fn: (fns: {
+     createPage: CreatePage;
+     createLayout: CreateLayout;
+-    unstable_setBuildData: (path: string, data: unknown) => void;
+-}, opts: {
+-    unstable_buildConfig: BuildConfig | undefined;
+ }) => Promise<void>): {
+     renderEntries: import("../server.js").RenderEntries;
+     getBuildConfig: import("../server.js").GetBuildConfig | undefined;
+diff --git a/dist/router/create-pages.js b/dist/router/create-pages.js
+index 6dbe0b765ea97547e75fbbd604bcfc6ea09d84a8..697304790d12c34320b93ae07d73189014b63fce 100644
+--- a/dist/router/create-pages.js
++++ b/dist/router/create-pages.js
+@@ -19,7 +19,6 @@ export function createPages(fn) {
+     const dynamicLayoutPathMap = new Map();
+     const staticComponentMap = new Map();
+     const noSsrSet = new WeakSet();
+-    const buildDataMap = new Map();
+     const registerStaticComponent = (id, component)=>{
+         if (staticComponentMap.has(id) && staticComponentMap.get(id) !== component) {
+             throw new Error(`Duplicated component for: ${id}`);
+@@ -139,18 +138,12 @@ export function createPages(fn) {
+             throw new Error('Invalid layout configuration');
+         }
+     };
+-    const unstable_setBuildData = (path, data)=>{
+-        buildDataMap.set(path, data);
+-    };
+     let ready;
+-    const configure = async (buildConfig)=>{
++    const configure = async ()=>{
+         if (!configured && !ready) {
+             ready = fn({
+                 createPage,
+-                createLayout,
+-                unstable_setBuildData
+-            }, {
+-                unstable_buildConfig: buildConfig
++                createLayout
+             });
+             await ready;
+             configured = true;
+@@ -174,8 +167,7 @@ export function createPages(fn) {
+                 pattern: path2regexp(parsePathWithSlug(path)),
+                 path: pathSpec,
+                 isStatic,
+-                noSsr,
+-                data: buildDataMap.get(path)
++                noSsr
+             });
+         }
+         for (const [path, [pathSpec]] of dynamicPagePathMap){
+@@ -184,8 +176,7 @@ export function createPages(fn) {
+                 pattern: path2regexp(parsePathWithSlug(path)),
+                 path: pathSpec,
+                 isStatic: false,
+-                noSsr,
+-                data: buildDataMap.get(path)
++                noSsr
+             });
+         }
+         for (const [path, [pathSpec]] of wildcardPagePathMap){
+@@ -194,13 +185,12 @@ export function createPages(fn) {
+                 pattern: path2regexp(parsePathWithSlug(path)),
+                 path: pathSpec,
+                 isStatic: false,
+-                noSsr,
+-                data: buildDataMap.get(path)
++                noSsr
+             });
+         }
+         return paths;
+-    }, async (id, { unstable_setShouldSkip, unstable_buildConfig })=>{
+-        await configure(unstable_buildConfig);
++    }, async (id, { unstable_setShouldSkip })=>{
++        await configure();
+         const staticComponent = staticComponentMap.get(id);
+         if (staticComponent) {
+             unstable_setShouldSkip([]);
+diff --git a/dist/router/define-router.d.ts b/dist/router/define-router.d.ts
+index db92421932e1b6075d0a9e8dc78a9d379c42f560..2bb976375e5de805a20a969abbf6e5f543f5ac1e 100644
+--- a/dist/router/define-router.d.ts
++++ b/dist/router/define-router.d.ts
+@@ -1,6 +1,5 @@
+ import type { FunctionComponent, ReactNode } from 'react';
+ import { defineEntries } from '../server.js';
+-import type { BuildConfig } from '../server.js';
+ import type { RouteProps, ShouldSkip } from './common.js';
+ import type { PathSpec } from '../lib/utils/path.js';
+ type RoutePropsForLayout = Omit<RouteProps, 'query'> & {
+@@ -12,11 +11,9 @@ export declare function unstable_defineRouter(getPathConfig: () => Promise<Itera
+     path: PathSpec;
+     isStatic?: boolean;
+     noSsr?: boolean;
+-    data?: unknown;
+ }>>, getComponent: (componentId: string, // "**/layout" or "**/page"
+ options: {
+     unstable_setShouldSkip: (val?: ShouldSkipValue) => void;
+-    unstable_buildConfig: BuildConfig | undefined;
+ }) => Promise<FunctionComponent<RouteProps> | FunctionComponent<RoutePropsForLayout> | null>): ReturnType<typeof defineEntries>;
+ export declare function unstable_redirect(pathname: string, query?: string, skip?: string[]): void;
+ export {};
+diff --git a/dist/router/define-router.js b/dist/router/define-router.js
+index 4ecbbe9c6cbecb4d0f188ea03263560a24c93652..3b876be1da523291bb04367d4c359d004c1ddd44 100644
+--- a/dist/router/define-router.js
++++ b/dist/router/define-router.js
+@@ -1,5 +1,5 @@
+ import { createElement } from 'react';
+-import { rerender } from '../server.js';
++import { rerender, unstable_getPlatformObject } from '../server.js';
+ import { Children, Slot } from '../client.js';
+ import { getComponentIds, getInputString, parseInputString, SHOULD_SKIP_ID, LOCATION_ID } from './common.js';
+ import { getPathMapping } from '../lib/utils/path.js';
+@@ -18,10 +18,12 @@ const safeJsonParse = (str)=>{
+     return undefined;
+ };
+ export function unstable_defineRouter(getPathConfig, getComponent) {
++    const platformObject = unstable_getPlatformObject();
+     let cachedPathConfig;
+-    const getMyPathConfig = async (buildConfig)=>{
+-        if (buildConfig) {
+-            return buildConfig;
++    const getMyPathConfig = async ()=>{
++        const pathConfig = platformObject.buildData?.defineRouterPathConfigs;
++        if (pathConfig) {
++            return pathConfig;
+         }
+         if (!cachedPathConfig) {
+             cachedPathConfig = Array.from(await getPathConfig()).map((item)=>{
+@@ -30,25 +32,24 @@ export function unstable_defineRouter(getPathConfig, getComponent) {
+                     pattern: item.pattern,
+                     pathname: item.path,
+                     isStatic: item.isStatic,
+-                    customData: {
++                    specs: {
+                         is404,
+-                        noSsr: !!item.noSsr,
+-                        data: item.data
++                        noSsr: !!item.noSsr
+                     }
+                 };
+             });
+         }
+         return cachedPathConfig;
+     };
+-    const existsPath = async (pathname, buildConfig)=>{
+-        const pathConfig = await getMyPathConfig(buildConfig);
++    const existsPath = async (pathname)=>{
++        const pathConfig = await getMyPathConfig();
+         const found = pathConfig.find(({ pathname: pathSpec })=>getPathMapping(pathSpec, pathname));
+-        return found ? found.customData.noSsr ? [
++        return found ? found.specs.noSsr ? [
+             'FOUND',
+             'NO_SSR'
+         ] : [
+             'FOUND'
+-        ] : pathConfig.some(({ customData: { is404 } })=>is404) // FIXMEs should avoid re-computation
++        ] : pathConfig.some(({ specs: { is404 } })=>is404) // FIXMEs should avoid re-computation
+          ? [
+             'NOT_FOUND',
+             'HAS_404'
+@@ -56,9 +57,9 @@ export function unstable_defineRouter(getPathConfig, getComponent) {
+             'NOT_FOUND'
+         ];
+     };
+-    const renderEntries = async (input, { params, buildConfig })=>{
++    const renderEntries = async (input, { params })=>{
+         const pathname = parseInputString(input);
+-        if ((await existsPath(pathname, buildConfig))[0] === 'NOT_FOUND') {
++        if ((await existsPath(pathname))[0] === 'NOT_FOUND') {
+             return null;
+         }
+         const shouldSkipObj = {};
+@@ -78,8 +79,7 @@ export function unstable_defineRouter(getPathConfig, getComponent) {
+                 }
+             };
+             const component = await getComponent(id, {
+-                unstable_setShouldSkip: setShoudSkip,
+-                unstable_buildConfig: buildConfig
++                unstable_setShouldSkip: setShoudSkip
+             });
+             if (!component) {
+                 return [];
+@@ -132,7 +132,7 @@ globalThis.__WAKU_ROUTER_PREFETCH__ = (path) => {
+   }
+ };`;
+         const buildConfig = [];
+-        for (const { pathname: pathSpec, isStatic, customData } of pathConfig){
++        for (const { pathname: pathSpec, isStatic, specs } of pathConfig){
+             const entries = [];
+             if (pathSpec.every(({ type })=>type === 'literal')) {
+                 const pathname = '/' + pathSpec.map(({ name })=>name).join('/');
+@@ -146,14 +146,15 @@ globalThis.__WAKU_ROUTER_PREFETCH__ = (path) => {
+                 pathname: pathSpec,
+                 isStatic,
+                 entries,
+-                customCode: customCode + (customData.is404 ? 'globalThis.__WAKU_ROUTER_404__ = true;' : ''),
+-                customData
++                customCode: customCode + (specs.is404 ? 'globalThis.__WAKU_ROUTER_404__ = true;' : '')
+             });
+         }
++        platformObject.buildData ||= {};
++        platformObject.buildData.defineRouterPathConfigs = pathConfig;
+         return buildConfig;
+     };
+-    const getSsrConfig = async (pathname, { searchParams, buildConfig })=>{
+-        const pathStatus = await existsPath(pathname, buildConfig);
++    const getSsrConfig = async (pathname, { searchParams })=>{
++        const pathStatus = await existsPath(pathname);
+         if (pathStatus[1] === 'NO_SSR') {
+             return null;
+         }
+diff --git a/dist/router/fs-router.js b/dist/router/fs-router.js
+index cd5d405623d80cada876cc6b79be2018ee44163f..594a68dce4674f31733c90721402519437cf6e7d 100644
+--- a/dist/router/fs-router.js
++++ b/dist/router/fs-router.js
+@@ -1,13 +1,12 @@
++import { unstable_getPlatformObject } from '../server.js';
+ import { createPages } from './create-pages.js';
+ import { EXTENSIONS } from '../lib/config.js';
+ const DO_NOT_BUNDLE = '';
+ export function fsRouter(importMetaUrl, loadPage, pages = 'pages') {
+-    return createPages(async ({ createPage, createLayout, unstable_setBuildData }, { unstable_buildConfig })=>{
+-        let files;
+-        if (unstable_buildConfig) {
+-            // TODO FIXME this is toooooooo naive
+-            files = unstable_buildConfig[0].customData.data;
+-        } else {
++    const platformObject = unstable_getPlatformObject();
++    return createPages(async ({ createPage, createLayout })=>{
++        let files = platformObject.buildData?.fsRouterFiles;
++        if (!files) {
+             // dev and build only
+             const [{ readdir }, { join, dirname, extname, sep }, { fileURLToPath }] = await Promise.all([
+                 import(/* @vite-ignore */ DO_NOT_BUNDLE + 'node:fs/promises'),
+@@ -46,6 +45,8 @@ export function fsRouter(importMetaUrl, loadPage, pages = 'pages') {
+                 throw new Error('Failed to resolve ' + file);
+             });
+         }
++        platformObject.buildData ||= {};
++        platformObject.buildData.fsRouterFiles = files;
+         for (const file of files){
+             const mod = await loadPage(file);
+             const config = await mod.getConfig?.();
+@@ -54,7 +55,6 @@ export function fsRouter(importMetaUrl, loadPage, pages = 'pages') {
+                 '_layout',
+                 'index'
+             ].includes(pathItems.at(-1)) ? pathItems.slice(0, -1) : pathItems).join('/');
+-            unstable_setBuildData(path, files); // FIXME toooooo naive, not efficient
+             if (pathItems.at(-1) === '_layout') {
+                 createLayout({
+                     path,
+diff --git a/dist/server.d.ts b/dist/server.d.ts
+index e26758251c8db80d524d8a1ff7a4d5e718cb5846..74d194840dcd3898cfb1302973c405568e89e134 100644
+--- a/dist/server.d.ts
++++ b/dist/server.d.ts
+@@ -12,16 +12,13 @@ export type BuildConfig = {
+     }[];
+     context?: Record<string, unknown>;
+     customCode?: string;
+-    customData?: unknown;
+ }[];
+ export type RenderEntries = (input: string, options: {
+     params: unknown | undefined;
+-    buildConfig: BuildConfig | undefined;
+ }) => Promise<Elements | null>;
+ export type GetBuildConfig = (unstable_collectClientModules: (input: string) => Promise<string[]>) => Promise<BuildConfig>;
+ export type GetSsrConfig = (pathname: string, options: {
+     searchParams: URLSearchParams;
+-    buildConfig?: BuildConfig | undefined;
+ }) => Promise<{
+     input: string;
+     params?: unknown;
+@@ -38,11 +35,11 @@ export type EntriesDev = {
+ export type EntriesPrd = EntriesDev & {
+     loadConfig: () => Promise<Config>;
+     loadModule: (id: string) => Promise<unknown>;
+-    buildConfig?: BuildConfig;
+     dynamicHtmlPaths: [pathSpec: PathSpec, htmlHead: string][];
+     publicIndexHtml: string;
++    buildData?: Record<string, unknown>;
+ };
+-declare let serverEnv: Record<string, string>;
++declare let serverEnv: Readonly<Record<string, string>>;
+ /**
+  * This is an internal function and not for public use.
+  */
+@@ -59,4 +56,11 @@ export declare const runWithRenderStoreInternal: <T>(renderStore: RenderStore, f
+ export declare function rerender(input: string, params?: unknown): void;
+ export declare function unstable_getCustomContext<CustomContext extends Record<string, unknown> = Record<string, unknown>>(): CustomContext;
+ export declare function unstable_getHeaders(): Record<string, string>;
++type PlatformObject = {
++    buildData?: Record<string, unknown>;
++    buildOptions?: {
++        deploy?: 'vercel-static' | 'vercel-serverless' | 'netlify-static' | 'netlify-functions' | 'cloudflare' | 'partykit' | 'deno' | 'aws-lambda' | 'aws-lambda-sst' | undefined;
++    };
++} & Record<string, unknown>;
++export declare function unstable_getPlatformObject(): PlatformObject;
+ export {};
+diff --git a/dist/server.js b/dist/server.js
+index fb58b39eb103df580063a89d33777e7f87329206..a09c560783897acde35c402585530803ce149405 100644
+--- a/dist/server.js
++++ b/dist/server.js
+@@ -63,3 +63,8 @@ export function unstable_getCustomContext() {
+ export function unstable_getHeaders() {
+     return unstable_getCustomContext()[REQUEST_HEADERS] || {};
+ }
++const platformObject = {};
++// TODO tentative name
++export function unstable_getPlatformObject() {
++    return platformObject;
++}

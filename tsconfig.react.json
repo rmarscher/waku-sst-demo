@@ -1,0 +1,22 @@
+{
+	"compilerOptions": {
+		"paths": {
+			"@/*": ["./src/*"]
+		},
+		"strict": true,
+		"target": "esnext",
+		"downlevelIteration": true,
+		"esModuleInterop": true,
+		"module": "esnext",
+		"moduleResolution": "bundler",
+		"skipLibCheck": true,
+		"strictNullChecks": true,
+		"noUncheckedIndexedAccess": true,
+		"exactOptionalPropertyTypes": true,
+		"types": ["react/experimental"],
+		"jsx": "react-jsx",
+		"forceConsistentCasingInFileNames": true,
+		"resolveJsonModule": true,
+		"sourceMap": true
+	}
+}

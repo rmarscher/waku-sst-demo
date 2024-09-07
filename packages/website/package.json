@@ -1,0 +1,43 @@
+{
+  "type": "module",
+  "dependencies": {
+    "jotai": "2.9.3",
+    "react": "19.0.0-rc-7771d3a7-20240827",
+    "react-dom": "19.0.0-rc-7771d3a7-20240827",
+    "react-server-dom-webpack": "19.0.0-rc-7771d3a7-20240827",
+    "vite-tsconfig-paths": "5.0.1",
+    "waku": "0.21.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.8.3",
+    "@types/node": "22.5.4",
+    "@types/react": "npm:types-react@rc",
+    "@types/react-dom": "npm:types-react-dom@rc",
+    "autoprefixer": "10.4.20",
+    "babel-plugin-react-compiler": "0.0.0-experimental-7449567-20240904",
+    "postcss": "8.4.45",
+    "tailwindcss": "3.4.10",
+    "typescript": "5.5.4"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": [
+      "./src/*.ts",
+      "./src/*/index.ts"
+    ]
+  },
+  "name": "@waku-sst-demo/website",
+  "overrides": {
+    "@types/react": "npm:types-react@rc",
+    "@types/react-dom": "npm:types-react-dom@rc"
+  },
+  "private": true,
+  "scripts": {
+    "biome": "biome check --apply .",
+    "build": "waku build --with-aws-lambda-sst",
+    "dev": "waku dev",
+    "format": "biome check --apply-unsafe src",
+    "start": "bun run serve-bun.ts"
+  },
+  "version": "0.0.0"
+}
