@@ -1,0 +1,22 @@
+{
+	"compilerOptions": {
+		"paths": {
+			"@/*": ["./src/*"]
+		},
+		"lib": ["es2023"],
+		"target": "es2022",
+		"module": "esnext",
+		"moduleResolution": "bundler",
+
+		"strict": true,
+		"downlevelIteration": true,
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"strictNullChecks": true,
+		"noUncheckedIndexedAccess": true,
+		"exactOptionalPropertyTypes": true,
+		"forceConsistentCasingInFileNames": true,
+		"resolveJsonModule": true,
+		"sourceMap": true
+	}
+}
